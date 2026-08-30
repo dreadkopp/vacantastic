@@ -1,0 +1,144 @@
+# Vacantastic — 4-service Docker stack, fronted by the existing Traefik proxy.
+#
+#   app        php artisan serve            → https://${APP_DOMAIN}          (Traefik, everything except /app)
+#   reverb     php artisan reverb:start     → wss://${APP_DOMAIN}/app        (Traefik, owns /app: WS + app broadcast pushes)
+#   scheduler  php artisan schedule:work    → internal (auto-reveals expired rounds)
+#   cache      KeyDB                        → internal (Laravel cache / Reverb scaling)
+#
+# All PHP services share the code bind mount (./ → /var/www/app), which also
+# carries the SQLite database (database/) and the private photo storage
+# (storage/app/private/). No host ports are published — Traefik routes
+# everything. Set APP_DOMAIN and TRAEFIK_NETWORK in .env (compose reads it).
+
+services:
+  app:
+    build: .
+    # --no-reload is required: in reload mode `artisan serve` strips the
+    # container environment from the spawned HTTP server process (only a
+    # small whitelist passes through), so the server would fall back to the
+    # local-dev values in the bind-mounted .env instead of the overrides above.
+    command: php artisan serve --host=0.0.0.0 --port=80 --no-reload
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_URL: https://${APP_DOMAIN}
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/www/app/database/database.sqlite
+      CACHE_STORE: redis
+      REDIS_CLIENT: predis
+      REDIS_HOST: cache
+      REDIS_PORT: "6379"
+      BROADCAST_CONNECTION: reverb
+      REVERB_HOST: reverb
+      REVERB_PORT: "8080"
+      REVERB_SCHEME: http
+      # The client derives the socket port from location (443 via Traefik);
+      # the .env value (8081, for local dev) must not leak into the page.
+      REVERB_CLIENT_PORT: ""
+      PHP_CLI_SERVER_WORKERS: "4"
+    volumes:
+      - ./:/var/www/app
+    networks:
+      - traefik
+    depends_on:
+      cache:
+        condition: service_healthy
+      reverb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(fsockopen('127.0.0.1', 80) ? 0 : 1);"]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+      start_period: 10s
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.app.rule: Host(`${APP_DOMAIN}`) && !PathPrefix(`/app`)
+      traefik.http.routers.app.entrypoints: websecure
+      traefik.http.routers.app.tls: "true"
+      traefik.http.services.app.loadbalancer.server.port: "80"
+
+  reverb:
+    build: .
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_URL: https://${APP_DOMAIN}
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/www/app/database/database.sqlite
+      CACHE_STORE: redis
+      REDIS_CLIENT: predis
+      REDIS_HOST: cache
+      BROADCAST_CONNECTION: reverb
+      REVERB_HOST: reverb
+      REVERB_PORT: "8080"
+      REVERB_SCHEME: http
+      REVERB_SERVER_HOST: 0.0.0.0
+      REVERB_SERVER_PORT: "8080"
+      # App credentials for validating incoming broadcast pushes (from .env).
+      REVERB_APP_ID: ${REVERB_APP_ID}
+      REVERB_APP_KEY: ${REVERB_APP_KEY}
+      REVERB_APP_SECRET: ${REVERB_APP_SECRET}
+    volumes:
+      - ./:/var/www/app
+    networks:
+      - traefik
+    depends_on:
+      cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(fsockopen('127.0.0.1', 8080) ? 0 : 1);"]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+      start_period: 10s
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.reverb.rule: Host(`${APP_DOMAIN}`) && PathPrefix(`/app`)
+      traefik.http.routers.reverb.entrypoints: websecure
+      traefik.http.routers.reverb.tls: "true"
+      traefik.http.services.reverb.loadbalancer.server.port: "8080"
+
+  scheduler:
+    build: .
+    command: php artisan schedule:work
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_URL: https://${APP_DOMAIN}
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/www/app/database/database.sqlite
+      CACHE_STORE: redis
+      REDIS_CLIENT: predis
+      REDIS_HOST: cache
+      BROADCAST_CONNECTION: reverb
+      REVERB_HOST: reverb
+      REVERB_PORT: "8080"
+      REVERB_SCHEME: http
+    volumes:
+      - ./:/var/www/app
+    networks:
+      - traefik
+    depends_on:
+      cache:
+        condition: service_healthy
+      reverb:
+        condition: service_healthy
+
+  cache:
+    image: eqalpha/keydb
+    command: ["--databases", "32"]
+    networks:
+      - traefik
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+      start_period: 5s
+
+networks:
+  traefik:
+    name: ${TRAEFIK_NETWORK}
+    external: true
