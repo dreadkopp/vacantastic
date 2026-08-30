@@ -39,7 +39,10 @@ class Round extends Model
     }
 
     /**
-     * The per-round time limit, falling back to the room default.
+     * The per-round time limit in seconds, falling back to the room default.
+     *
+     * A value of 0 means "unlimited" — the round never auto-ends and only
+     * finishes when the host reveals it.
      */
     public function effectiveDuration(): int
     {

@@ -483,9 +483,7 @@
       fd.append('photo', blob, (file.name.replace(/\.\w+$/, '') || 'photo') + '.jpg');
       fd.append('lat', target.lat);
       fd.append('lng', target.lng);
-      if (document.getElementById('duration').value > 0) {
-          fd.append('duration', document.getElementById('duration').value );
-      }
+      fd.append('duration', document.getElementById('duration').value);
       await api('POST', `/api/rooms/${state.uuid}/rounds`, fd);
       toast('Round saved.');
       // The room.updated broadcast will re-render; also refresh for snappiness.
@@ -515,7 +513,12 @@
   function startTimer(endsAt) {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     const el = document.getElementById('timer');
-    if (!el || !endsAt) return;
+    if (!el) return;
+    if (!endsAt) {
+      el.textContent = '∞';
+      el.classList.remove('warn');
+      return;
+    }
     const end = new Date(endsAt).getTime();
     const tick = () => {
       const remain = Math.max(0, Math.round((end - Date.now()) / 1000));

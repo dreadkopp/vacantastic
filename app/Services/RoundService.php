@@ -28,7 +28,8 @@ class RoundService
 
         $round->status = 'playing';
         $round->started_at = now();
-        $round->ends_at = now()->addSeconds($round->effectiveDuration());
+        $duration = $round->effectiveDuration();
+        $round->ends_at = $duration > 0 ? now()->addSeconds($duration) : null;
         $round->save();
 
         broadcast(new RoundStarted($round));
