@@ -26,11 +26,7 @@ class RoundController extends Controller
             'photo' => ['required', 'image', 'max:10240'], // 10 MB
             'lat' => ['required', 'numeric', 'between:-90,90'],
             'lng' => ['required', 'numeric', 'between:-180,180'],
-            'duration' => ['sometimes', 'integer', 'min:0', 'max:3600', function ($attribute, $value, $fail) {
-                if ($value !== 0 && $value < 30) {
-                    $fail('Duration must be 0 (unlimited) or at least 30 seconds.');
-                }
-            }],
+            'duration' => ['sometimes', 'integer', 'min:0', 'max:3600'],
         ]);
 
         $file = $request->file('photo');
