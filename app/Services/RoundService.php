@@ -4,12 +4,14 @@ namespace App\Services;
 
 use App\Events\RoomUpdated;
 use App\Events\RoundFinished;
+use App\Events\RoundGuessPlaced;
 use App\Events\RoundGuessSubmitted;
 use App\Events\RoundStarted;
 use App\Models\Guess;
 use App\Models\Player;
 use App\Models\Round;
-use Illuminate\Http\Exceptions\HttpException;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class RoundService
 {
@@ -61,6 +63,7 @@ class RoundService
         );
 
         broadcast(new RoundGuessSubmitted($round));
+        broadcast(new RoundGuessPlaced($round, $guess));
 
         // Reveal once every non-host player has submitted (the host never does).
         $guessers = $round->room->players()->where('is_host', false)->count();
@@ -129,5 +132,42 @@ class RoundService
         }
 
         return $expired->count();
+    }
+
+    /**
+     * Delete the photo uploads of outdated rounds: rounds that are finished
+     * (or unlimited, i.e. duration 0) and older than a week. The round row
+     * (and its results) is kept — only the upload is removed.
+     *
+     * Returns the number of photos removed.
+     */
+    public function cleanupOldPhotos(): int
+    {
+        $stale = Round::query()
+            ->where(fn ($q) => $q->where('status', 'finished')->orWhere('duration', 0))
+            ->where('created_at', '<', now()->subWeek())
+            ->get();
+
+        $removed = 0;
+
+        foreach ($stale as $round) {
+            if (! $round->photo_path) {
+                continue;
+            }
+
+            $disk = Storage::disk('local');
+
+            if ($disk->exists($round->photo_path)) {
+                $disk->delete($round->photo_path);
+            }
+
+            $round->photo_path = null;
+            $round->photo_mime = null;
+            $round->save();
+
+            $removed++;
+        }
+
+        return $removed;
     }
 }

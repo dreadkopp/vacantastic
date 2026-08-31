@@ -3,11 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Events\RoomUpdated;
+use App\Models\Guess;
 use App\Models\Player;
 use App\Models\Room;
 use App\Models\Round;
 use App\Services\RoundService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -100,12 +102,15 @@ class RoomController extends Controller
             ? $round->guesses()->pluck('player_id')->flip()->all()
             : [];
 
+        $totals = $room->totalScores();
+
         $players = $room->players()->get()->map(fn (Player $p): array => [
             'id' => $p->id,
             'name' => $p->name,
             'isHost' => $p->is_host,
             'submitted' => isset($submitted[$p->id]),
             'you' => $p->id === $player->id,
+            'totalScore' => $totals->get($p->id, 0),
         ])->all();
 
         return [
@@ -136,7 +141,42 @@ class RoomController extends Controller
                 ? ['lat' => $round->target_lat, 'lng' => $round->target_lng]
                 : null,
             'results' => $finished ? $round->results() : null,
+            // The host watches the round, so they get the live pin positions.
+            // Regular players never receive coordinates (anti-cheat).
+            'guesses' => $player->is_host && $round->status === 'playing'
+                ? $round->guesses()->with('player')->get()->map(fn (Guess $g): array => [
+                    'id' => $g->player_id,
+                    'name' => $g->player->name,
+                    'lat' => $g->lat,
+                    'lng' => $g->lng,
+                ])->values()->all()
+                : null,
+            // Each player's last known map view (center + zoom), so the host's
+            // "where are they looking" circles survive a refresh or re-render.
+            'views' => $player->is_host && $round->status === 'playing'
+                ? $this->viewsJson($room, $round)
+                : null,
             'myGuess' => $myGuess ? ['lat' => $myGuess->lat, 'lng' => $myGuess->lng] : null,
         ];
+    }
+
+    /**
+     * Each non-host player's last known map view (center + zoom + viewport
+     * width), restored from the cache the view endpoint writes to. Players
+     * who never reported a view are omitted.
+     */
+    protected function viewsJson(Room $room, Round $round): array
+    {
+        $views = [];
+
+        foreach ($room->players()->where('is_host', false)->get() as $p) {
+            $view = Cache::get("vacantastic:view:{$round->id}:{$p->id}");
+
+            if ($view !== null) {
+                $views[] = ['playerId' => $p->id, 'name' => $p->name] + $view;
+            }
+        }
+
+        return $views;
     }
 }

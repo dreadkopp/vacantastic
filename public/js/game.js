@@ -29,9 +29,29 @@
   let target = null;
   let timerInterval = null;
   let pusher = null;
+  let hostChannel = null;
+  const hostGuessMarkers = new Map();
+  const hostViewCircles = new Map();
 
   const OSM = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
   const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+
+  // Localized OSM tile servers (labels in the viewer's own language), keyed by
+  // language code. Only servers verified to be up are listed; anything else
+  // falls back to the standard OSM layer (English labels).
+  const LOCALIZED_TILES = {
+    de: { url: 'https://tile.openstreetmap.de/{z}/{x}/{y}.png', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="https://openstreetmap.de/">OSM.DE</a>' },
+    fr: { url: 'https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="https://www.openstreetmap.fr/">OSM France</a>' },
+    ja: { url: 'https://tile.openstreetmap.jp/{z}/{x}/{y}.png', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="https://www.openstreetmap.jp/">OSM Japan</a>' },
+  };
+
+  // Tile layer for the viewer's language (e.g. German street names for a
+  // German browser). Used by every map in the game.
+  function mapTiles() {
+    const lang = (((navigator.languages && navigator.languages[0]) || navigator.language || 'en').slice(0, 2)).toLowerCase();
+    const def = LOCALIZED_TILES[lang] || { url: OSM, attribution: OSM_ATTR };
+    return L.tileLayer(def.url, { maxZoom: 19, attribution: def.attribution });
+  }
 
   // ---------- helpers ----------
   function me() { return state.players.find((p) => p.you) || null; }
@@ -67,6 +87,101 @@
     return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(state.token);
   }
 
+  // ---------- photo lightbox (zoom) ----------
+  // Click the photo to inspect it full-size: wheel/pinch to zoom, drag to pan.
+  function openLightbox(url) {
+    if (!url || document.querySelector('.lightbox')) return;
+
+    const lb = document.createElement('div');
+    lb.className = 'lightbox';
+    lb.innerHTML = `
+      <div class="lb-bar">
+        <button class="lb-btn" data-act="out" title="Zoom out">&minus;</button>
+        <button class="lb-btn" data-act="in" title="Zoom in">+</button>
+        <button class="lb-btn" data-act="reset" title="Fit to screen">1:1</button>
+        <button class="lb-btn" data-act="close" title="Close">&times;</button>
+      </div>
+      <img src="${url}" alt="Photo">`;
+    document.body.appendChild(lb);
+
+    const img = lb.querySelector('img');
+    let scale = 1, tx = 0, ty = 0;
+    const apply = () => { img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; };
+
+    // Zoom while keeping the point (cx, cy) — offset from the overlay center — fixed.
+    const zoomAt = (cx, cy, factor) => {
+      const next = Math.min(8, Math.max(1, scale * factor));
+      const f = next / scale;
+      tx = cx - (cx - tx) * f;
+      ty = cy - (cy - ty) * f;
+      scale = next;
+      if (scale === 1) { tx = 0; ty = 0; }
+      apply();
+    };
+
+    const centerOffset = (clientX, clientY) => {
+      const r = lb.getBoundingClientRect();
+      return { x: clientX - (r.left + r.width / 2), y: clientY - (r.top + r.height / 2) };
+    };
+
+    lb.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const c = centerOffset(e.clientX, e.clientY);
+      zoomAt(c.x, c.y, e.deltaY < 0 ? 1.2 : 1 / 1.2);
+    }, { passive: false });
+
+    // Drag to pan; two-finger pinch to zoom (touch).
+    const pointers = new Map();
+    let pinchDist = null;
+    let downOnBackground = false;
+    lb.addEventListener('pointerdown', (e) => {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      downOnBackground = e.target === lb;
+      // Capture only for drags on the image. Pointer capture retargets the
+      // synthetic click to the overlay, which would otherwise close the lightbox.
+      if (!downOnBackground && e.target.tagName === 'IMG') {
+        try { lb.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      }
+    });
+    lb.addEventListener('pointermove', (e) => {
+      const prev = pointers.get(e.pointerId);
+      if (!prev) return;
+      if (pointers.size === 1) {
+        tx += e.clientX - prev.x;
+        ty += e.clientY - prev.y;
+        apply();
+      } else if (pointers.size === 2) {
+        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        const [a, b] = [...pointers.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (pinchDist) {
+          const c = centerOffset((a.x + b.x) / 2, (a.y + b.y) / 2);
+          zoomAt(c.x, c.y, d / pinchDist);
+        }
+        pinchDist = d;
+      }
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    });
+    const release = (e) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinchDist = null;
+    };
+    lb.addEventListener('pointerup', release);
+    lb.addEventListener('pointercancel', release);
+
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const close = () => {
+      document.removeEventListener('keydown', onKey);
+      lb.remove();
+    };
+    document.addEventListener('keydown', onKey);
+    lb.addEventListener('click', (e) => { if (downOnBackground && e.target === lb) close(); });
+    lb.querySelector('[data-act="close"]').addEventListener('click', close);
+    lb.querySelector('[data-act="in"]').addEventListener('click', () => zoomAt(0, 0, 1.5));
+    lb.querySelector('[data-act="out"]').addEventListener('click', () => zoomAt(0, 0, 1 / 1.5));
+    lb.querySelector('[data-act="reset"]').addEventListener('click', () => { scale = 1; tx = 0; ty = 0; apply(); });
+  }
+
   function fmtDist(m) {
     if (m == null) return '—';
     if (m < 1000) return Math.round(m) + ' m';
@@ -78,6 +193,8 @@
     if (gameMap) { gameMap.remove(); gameMap = null; }
     if (targetMap) { targetMap.remove(); targetMap = null; }
     myMarker = null; targetMarker = null; myPin = null; target = null;
+    hostGuessMarkers.clear();
+    hostViewCircles.clear();
   }
 
   // ---------- state ----------
@@ -87,6 +204,7 @@
       state.room = data.room;
       state.players = data.players;
       state.round = data.round;
+      syncHostChannel();
       render();
     } catch (e) {
       if (e.message.includes('401') || /401/.test(e.message)) {
@@ -151,11 +269,23 @@
         <span class="${p.isHost ? 'host' : ''}">${escapeHtml(p.name)}</span>
         ${p.isHost ? '<span class="host">host</span>' : ''}
         ${p.you ? '<span class="you">you</span>' : ''}
+        ${!p.isHost ? `<span class="score">${p.totalScore || 0} pts</span>` : ''}
       </span>`).join('');
   }
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // Wires the #photo <img> (present in both the playing and finished views)
+  // to the round's photo, with click-to-zoom. No-ops without a photo/element.
+  function mountPhoto(photoUrl) {
+    const url = photoSrc(photoUrl);
+    const img = document.getElementById('photo');
+    if (!url || !img) return;
+    img.src = url;
+    img.onerror = () => { img.alt = 'Photo unavailable'; };
+    img.addEventListener('click', () => openLightbox(url));
   }
 
   // ---------- lobby ----------
@@ -186,22 +316,29 @@
           </div>
           <div class="toolbar">
             ${host
-              ? '<span class="muted">You set the location — you\'re watching this round.</span>'
-              : '<button id="submit-btn" disabled>Submit guess</button><span class="muted">Click the map to drop your pin.</span>'}
+              ? '<span class="muted">You set the location — player pins and where they are looking appear on the map in real time.</span>'
+              : '<button id="submit-btn" disabled>Submit guess</button><span class="muted">Click the map to drop your pin. Click the photo to zoom.</span>'}
             ${host ? '<button id="reveal-btn" class="secondary">Reveal now</button>' : ''}
           </div>
         </div>
         <div class="map" id="map"></div>
       </div>`;
 
-    const url = photoSrc(round.photoUrl);
-    if (url) {
-      const img = document.getElementById('photo');
-      img.src = url;
-      img.onerror = () => { img.alt = 'Photo unavailable'; };
-    }
+    mountPhoto(round.photoUrl);
 
     initGameMap(host);
+    // The host watches: show where players have dropped their pins and where
+    // they are currently looking (a circle around each player's viewport).
+    if (host) {
+      if (Array.isArray(round.guesses)) {
+        for (const g of round.guesses) {
+          hostGuessMarkers.set(g.id, L.marker([g.lat, g.lng]).addTo(gameMap).bindTooltip(escapeHtml(g.name)));
+        }
+      }
+      if (Array.isArray(round.views)) {
+        for (const v of round.views) upsertViewCircle(v);
+      }
+    }
     startTimer(round.endsAt);
     updateTally();
 
@@ -214,7 +351,7 @@
     myMarker = null;
     myPin = null;
     gameMap = L.map('map');
-    L.tileLayer(OSM, { maxZoom: 19, attribution: OSM_ATTR }).addTo(gameMap);
+    mapTiles().addTo(gameMap);
 
     // Everyone starts at Null Island (0, 0) — the classic GeoGuessr start.
     gameMap.setView([0, 0], 4);
@@ -230,6 +367,18 @@
     } else {
       gameMap.on('click', (e) => setMyPin(e.latlng.lat, e.latlng.lng));
     }
+    // Let the host see where I am looking (throttled).
+    startViewReporting();
+  }
+
+  // Leaflet lets the map pan continuously past +/-180° longitude, so a pin
+  // placed (or the map center) after scrolling far west/east comes back
+  // "unwrapped" — e.g. -220 instead of its Japan-equivalent 140. The marker
+  // itself is left as-is (so it stays exactly where the user clicked/dragged,
+  // with no visual jump); this only normalizes the value sent to the server,
+  // which validates longitude within -180..180.
+  function wrapLng(lat, lng) {
+    return L.latLng(lat, lng).wrap();
   }
 
   function setMyPin(lat, lng) {
@@ -249,7 +398,8 @@
     btn.disabled = true;
     btn.textContent = 'Submitting…';
     try {
-      await api('POST', `/api/rooms/${state.uuid}/rounds/${state.round.id}/guess`, { lat: myPin.lat, lng: myPin.lng });
+      const pinWrapped = wrapLng(myPin.lat, myPin.lng);
+      await api('POST', `/api/rooms/${state.uuid}/rounds/${state.round.id}/guess`, { lat: pinWrapped.lat, lng: pinWrapped.lng });
       // Lock the map; the reveal will arrive via the round.finished broadcast.
       if (myMarker) myMarker.dragging.disable();
       gameMap.off('click');
@@ -259,6 +409,40 @@
       btn.disabled = false;
       btn.textContent = 'Submit guess';
     }
+  }
+
+  // Report where I am looking on the map so the host can follow my search.
+  // Throttled to ~1 update/second, with a trailing send for the final position.
+  function startViewReporting() {
+    if (isHost() || !gameMap) return;
+    let lastSent = 0;
+    let trailing = null;
+
+    const send = () => {
+      if (!state.round || state.round.status !== 'playing') return;
+      const c = wrapLng(gameMap.getCenter().lat, gameMap.getCenter().lng);
+      api('POST', `/api/rooms/${state.uuid}/rounds/${state.round.id}/view`, {
+        lat: c.lat,
+        lng: c.lng,
+        zoom: gameMap.getZoom(),
+        widthPx: gameMap.getSize().x,
+      }).catch(() => { /* best effort — the host just misses an update */ });
+    };
+
+    gameMap.on('moveend', () => {
+      if (Date.now() - lastSent >= 1000) {
+        lastSent = Date.now();
+        send();
+      } else if (!trailing) {
+        trailing = setTimeout(() => {
+          trailing = null;
+          lastSent = Date.now();
+          send();
+        }, 1000);
+      }
+    });
+
+    send(); // initial report so the host sees me right away
   }
 
   function updateTally() {
@@ -272,17 +456,23 @@
   // ---------- finished ----------
   function renderFinished() {
     const round = state.round;
+    const hasPhoto = !!round.photoUrl;
     game.innerHTML = `
       <div class="card">
         <h2>Results</h2>
-        <p class="muted">The true location is revealed. Closest guess wins.</p>
-        <div class="map" id="map" style="margin-bottom:16px"></div>
+        <p class="muted">The true location is revealed. Closest guess wins.${hasPhoto ? ' Click the photo to zoom in.' : ''}</p>
+        <div class="${hasPhoto ? 'grid finished' : ''}" style="margin-bottom:16px">
+          ${hasPhoto ? '<div class="photo-wrap"><img id="photo" alt="Where was this photo taken?"></div>' : ''}
+          <div class="map" id="map"></div>
+        </div>
         <table>
-          <thead><tr><th>#</th><th>Player</th><th>Distance</th><th>Score</th></tr></thead>
+          <thead><tr><th>#</th><th>Player</th><th>Distance</th><th>Score</th><th>Total</th></tr></thead>
           <tbody id="results-body"></tbody>
         </table>
+        <p class="muted" style="margin-top:8px">Score is this round; Total adds up across every round played in this room.</p>
         <div id="host-controls" style="margin-top:16px">${hostControls()}</div>
       </div>`;
+    mountPhoto(round.photoUrl);
     renderResultsMap();
     renderResultsTable();
     wireHostControls();
@@ -301,7 +491,7 @@
     const round = state.round;
     if (gameMap) { gameMap.remove(); gameMap = null; }
     gameMap = L.map('map');
-    L.tileLayer(OSM, { maxZoom: 19, attribution: OSM_ATTR }).addTo(gameMap);
+    mapTiles().addTo(gameMap);
 
     const pts = [];
     if (round.target) {
@@ -332,6 +522,7 @@
         <td>${escapeHtml(r.name)}${you ? ' <span class="you" style="color:var(--accent-2)">(you)</span>' : ''}</td>
         <td>${fmtDist(r.distance)}</td>
         <td>${r.score}</td>
+        <td>${r.total}</td>
       </tr>`;
     }).join('');
   }
@@ -341,19 +532,17 @@
     if (!isHost()) return '';
     const status = state.round ? state.round.status : null;
     if (!state.round || status === 'finished') {
+      const defaultDuration = state.room ? state.room.defaultDuration : 300;
+      const durationOptions = [
+        [60, '1 min'], [120, '2 min'], [180, '3 min'], [300, '5 min'], [600, '10 min'], [0, 'unlimited'],
+      ].map(([value, label]) => `<option value="${value}"${value === defaultDuration ? ' selected' : ''}>${label}</option>`).join('');
       return `
         <div class="host-panel">
           <h3>${state.round ? 'Next round' : 'New round'}</h3>
+          <p class="privacy-note">The photo is stored on our server and is only accessible to people who have this room's link. It's deleted automatically a week after the round ends.</p>
           <div class="file-row">
-            <input type="file" id="photo" accept="image/*">
-            <select id="duration" title="Time limit">
-              <option value="60">1 min</option>
-              <option value="120">2 min</option>
-              <option value="180">3 min</option>
-              <option value="300" selected>5 min</option>
-              <option value="600">10 min</option>
-              <option value="0">unlimited</option>
-            </select>
+            <input type="file" id="round-photo" accept="image/*">
+            <select id="duration" title="Time limit">${durationOptions}</select>
           </div>
           <p class="exif-note" id="exif-note"></p>
           <div class="target-row">
@@ -374,7 +563,7 @@
     const status = state.round ? state.round.status : null;
 
     if (!state.round || status === 'finished') {
-      const fileInput = document.getElementById('photo');
+      const fileInput = document.getElementById('round-photo');
       const note = document.getElementById('exif-note');
       if (fileInput) fileInput.addEventListener('change', () => onPhotoSelect(fileInput.files[0], note));
       if (document.getElementById('save-round')) document.getElementById('save-round').addEventListener('click', saveRound);
@@ -390,7 +579,7 @@
     targetMarker = null;
     target = null;
     targetMap = L.map('target-map');
-    L.tileLayer(OSM, { maxZoom: 19, attribution: OSM_ATTR }).addTo(targetMap);
+    mapTiles().addTo(targetMap);
     targetMap.setView([20, 0], 2);
     targetMap.on('click', (e) => {
       target = { lat: e.latlng.lat, lng: e.latlng.lng };
@@ -470,7 +659,7 @@
   }
 
   async function saveRound() {
-    const file = document.getElementById('photo').files[0];
+    const file = document.getElementById('round-photo').files[0];
     if (!file) { toast('Choose a photo first.'); return; }
     if (!target) { toast('Set the target location.'); return; }
     const btn = document.getElementById('save-round');
@@ -481,8 +670,9 @@
       btn.textContent = 'Saving…';
       const fd = new FormData();
       fd.append('photo', blob, (file.name.replace(/\.\w+$/, '') || 'photo') + '.jpg');
-      fd.append('lat', target.lat);
-      fd.append('lng', target.lng);
+      const targetWrapped = wrapLng(target.lat, target.lng);
+      fd.append('lat', targetWrapped.lat);
+      fd.append('lng', targetWrapped.lng);
       fd.append('duration', document.getElementById('duration').value);
       await api('POST', `/api/rooms/${state.uuid}/rounds`, fd);
       toast('Round saved.');
@@ -552,6 +742,10 @@
       wssPort: port,
       enabledTransports: ['ws', 'wss'],
       cluster: 'mt1',
+      // Private channel auth (host pin view) goes through Laravel's
+      // broadcasting/auth endpoint with the player token.
+      authEndpoint: location.origin + '/broadcasting/auth',
+      auth: { headers: { 'X-Player-Token': state.token } },
     });
 
     const ch = pusher.subscribe('room-' + state.uuid);
@@ -565,6 +759,85 @@
       }
     });
     ch.bind('subscription_succeeded', () => { /* connected */ });
+  }
+
+  // The host subscribes to a private channel to watch pins live.
+  // (Auth for regular players is rejected server-side, so they never get it.)
+  function syncHostChannel() {
+    if (!pusher) return;
+    if (isHost() && !hostChannel) {
+      hostChannel = pusher.subscribe('private-room-' + state.uuid + '.host');
+      hostChannel.bind('round.guess-placed', onGuessPlaced);
+      hostChannel.bind('round.view-updated', (data) => {
+        if (state.round && data.roundId === state.round.id) upsertViewCircle(data);
+      });
+    } else if (!isHost() && hostChannel) {
+      pusher.unsubscribe('private-room-' + state.uuid + '.host');
+      hostChannel = null;
+    }
+  }
+
+  function onGuessPlaced(data) {
+    if (!state.round || data.roundId !== state.round.id || !gameMap) return;
+    let marker = hostGuessMarkers.get(data.playerId);
+    if (marker) {
+      marker.setLatLng([data.lat, data.lng]);
+    } else {
+      marker = L.marker([data.lat, data.lng]).addTo(gameMap).bindTooltip(escapeHtml(data.name));
+      hostGuessMarkers.set(data.playerId, marker);
+    }
+    // Keep the new pin in view.
+    if (!gameMap.getBounds().contains(marker.getLatLng())) {
+      gameMap.fitBounds(gameMap.getBounds().extend(marker.getLatLng()).pad(0.3));
+    }
+    const el = document.getElementById('tally');
+    if (el) el.textContent = `${data.submitted} of ${data.total} submitted`;
+  }
+
+  // ---------- host view circles ----------
+  // The host sees a circle around each player's current viewport — a rough
+  // "they are searching this area" indicator derived from center + zoom.
+  const VIEW_COLORS = ['#2dd4bf', '#ff8a3d', '#f472b6', '#a78bfa', '#facc15', '#4ade80', '#60a5fa', '#fb923c'];
+
+  function viewColor(playerId) {
+    const idx = state.players.findIndex((p) => p.id === playerId);
+    return VIEW_COLORS[(idx < 0 ? 0 : idx) % VIEW_COLORS.length];
+  }
+
+  // Web Mercator: meters per screen pixel at a given latitude and zoom level.
+  function metersPerPixel(lat, zoom) {
+    return (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
+  }
+
+  function upsertViewCircle(v) {
+    if (!gameMap || v.lat == null || v.lng == null) return;
+    const zoom = v.zoom ?? gameMap.getZoom();
+    const widthPx = v.widthPx || gameMap.getSize().x;
+    const radius = metersPerPixel(v.lat, zoom) * (widthPx / 2);
+
+    let circle = hostViewCircles.get(v.playerId);
+    if (circle) {
+      circle.setLatLng([v.lat, v.lng]);
+      circle.setRadius(radius);
+    } else {
+      const color = viewColor(v.playerId);
+      circle = L.circle([v.lat, v.lng], {
+        radius,
+        color,
+        weight: 2,
+        opacity: 0.75,
+        fillColor: color,
+        fillOpacity: 0.12,
+      }).addTo(gameMap);
+      hostViewCircles.set(v.playerId, circle);
+    }
+    if (circle.getTooltip()) circle.setTooltipContent(escapeHtml(v.name));
+    else circle.bindTooltip(escapeHtml(v.name), { direction: 'center' });
+    // Keep the player's search area in view (same as pins): only pan when
+    // the player has jumped outside the current viewport.
+    if (!gameMap.getBounds().contains(circle.getLatLng())) {
+      gameMap.fitBounds(gameMap.getBounds().extend(circle.getLatLng()).pad(0.3));
+    }
   }
 
   // ---------- share bar ----------

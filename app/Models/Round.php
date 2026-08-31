@@ -54,16 +54,19 @@ class Round extends Model
      *
      * Players who never guessed appear with null coordinates and a score of 0.
      * Only meaningful once the round is finished (distance/score are set on reveal).
+     * `total` is the player's cumulative score across every round in this room,
+     * including this one, so a multi-round game keeps a running leaderboard.
      *
-     * @return array<int, array{id: int, name: string, lat: ?float, lng: ?float, distance: ?int, score: int}>
+     * @return array<int, array{id: int, name: string, lat: ?float, lng: ?float, distance: ?int, score: int, total: int}>
      */
     public function results(): array
     {
         $guesses = $this->guesses()->get()->keyBy('player_id');
+        $totals = $this->room->totalScores();
 
         return $this->room->players
             ->reject(fn (Player $p) => $p->is_host)
-            ->map(function (Player $player) use ($guesses): array {
+            ->map(function (Player $player) use ($guesses, $totals): array {
                 $guess = $guesses->get($player->id);
 
                 return [
@@ -73,6 +76,7 @@ class Round extends Model
                     'lng' => $guess?->lng,
                     'distance' => $guess?->distance,
                     'score' => $guess?->score ?? 0,
+                    'total' => $totals->get($player->id, 0),
                 ];
             })
             ->sortByDesc('score')

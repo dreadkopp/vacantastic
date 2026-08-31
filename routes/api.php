@@ -22,4 +22,5 @@ Route::post('/rooms/{uuid}/rounds/{round}/start', [RoundController::class, 'star
 
 // Any player.
 Route::post('/rooms/{uuid}/rounds/{round}/guess', [RoundController::class, 'guess'])->middleware('player');
+Route::post('/rooms/{uuid}/rounds/{round}/view', [RoundController::class, 'view'])->middleware('player');
 Route::post('/rooms/{uuid}/rounds/{round}/reveal', [RoundController::class, 'reveal'])->middleware('player');

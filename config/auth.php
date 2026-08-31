@@ -42,6 +42,15 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+
+        // Resolves the Player from the same token used by the REST API
+        // (X-Player-Token header or `token` query param). Required so the
+        // Pusher/Reverb broadcasting-auth endpoint has an authenticated
+        // "user" to check for private channels — see routes/channels.php.
+        'player-token' => [
+            'driver' => 'player-token',
+            'provider' => null,
+        ],
     ],
 
     /*

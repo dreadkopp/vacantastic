@@ -1,0 +1,16 @@
+# Keep the build context small and the image clean. Everything here is either
+# regenerated at build time or provided at runtime by the ./ → /var/www/app
+# bind mount (docker-compose.yml).
+.git
+node_modules
+vendor
+storage/logs/*
+storage/framework/cache/data/*
+storage/framework/sessions/*
+storage/framework/testing/*
+storage/framework/views/*
+storage/app/private/*
+storage/app/public/*
+database/database.sqlite
+database/database.sqlite-wal
+database/database.sqlite-shm

@@ -65,13 +65,14 @@
         .chip.submitted .dot { background: var(--accent-2); }
         .chip .host { color: var(--accent); font-weight: 700; }
         .chip .you { color: var(--accent-2); }
+        .chip .score { color: var(--muted); font-variant-numeric: tabular-nums; }
 
-        /* Layout for playing */
+        /* Layout for playing / finished (photo + map side by side) */
         .grid { display: grid; gap: 16px; }
-        .grid.playing { grid-template-columns: 1fr; }
-        @media (min-width: 900px) { .grid.playing { grid-template-columns: 420px 1fr; align-items: start; } }
+        .grid.playing, .grid.finished { grid-template-columns: 1fr; }
+        @media (min-width: 900px) { .grid.playing, .grid.finished { grid-template-columns: 420px 1fr; align-items: start; } }
         .photo-wrap { border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #000; }
-        .photo-wrap img { width: 100%; display: block; max-height: 460px; object-fit: contain; background: #000; }
+        .photo-wrap img { width: 100%; display: block; max-height: 460px; object-fit: contain; background: #000; cursor: zoom-in; }
         .map { height: clamp(420px, 70vh, 720px); border-radius: 12px; border: 1px solid var(--line); background: #0a0f1e; }
         .map.small { height: 260px; }
         .leaflet-container { background: #0a0f1e; }
@@ -99,6 +100,28 @@
         .exif-note.warn { color: var(--accent); }
         .target-row { margin-top: 12px; }
         .target-row .coords { font-size: 13px; color: var(--muted); margin-top: 8px; font-variant-numeric: tabular-nums; }
+        .privacy-note { font-size: 12px; color: var(--muted); margin: 10px 0 0; line-height: 1.5; }
+
+        /* Photo lightbox (zoom) */
+        .lightbox {
+            position: fixed; inset: 0; z-index: 3000;
+            background: rgba(5, 8, 18, .93);
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden;
+        }
+        .lightbox img {
+            max-width: 100%; max-height: 100%; object-fit: contain;
+            transform-origin: center center;
+            touch-action: none; cursor: grab;
+        }
+        .lightbox img:active { cursor: grabbing; }
+        .lb-bar { position: absolute; top: 14px; right: 14px; display: flex; gap: 8px; }
+        .lb-btn {
+            width: 40px; height: 40px; padding: 0; font-size: 18px; line-height: 1;
+            background: var(--panel-2); color: var(--text);
+            border: 1px solid var(--line); border-radius: 8px;
+        }
+        .lb-btn:hover { filter: brightness(1.2); }
 
         .toast {
             position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
